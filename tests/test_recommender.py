@@ -3,7 +3,17 @@ from pathlib import Path
 import pytest
 
 from src.main import format_recommendations_table
-from src.recommender import Song, UserProfile, Recommender, load_songs, recommend_songs, score_song
+from src.recommender import (
+    Song,
+    UserProfile,
+    Recommender,
+    evaluate_recommendations,
+    load_music_knowledge,
+    retrieve_music_context,
+    load_songs,
+    recommend_songs,
+    score_song,
+)
 
 def make_small_recommender() -> Recommender:
     songs = [
@@ -248,3 +258,265 @@ def test_recommendation_table_wraps_long_text_and_keeps_all_reasons():
     assert "popularity prior (+0.20)" in table
     assert "repeat artist penalty (-0.25)" in table
     assert "4.27" in table
+
+
+def test_evaluation_passes_for_valid_recommendations():
+    """Valid recommendations should pass all reliability checks."""
+
+    recommendations = [
+        (
+            {
+                "title": "Sunrise City",
+                "artist": "Neon Echo",
+            },
+            4.04,
+            "genre match; mood match; energy similarity",
+        )
+    ]
+
+    result = evaluate_recommendations(recommendations)
+
+    assert result.passed is True
+    assert result.reliability_score == 100.0
+    assert result.checks_passed == 3
+
+
+def test_evaluation_fails_for_empty_recommendations():
+    """An empty recommendation list should fail evaluation."""
+
+    result = evaluate_recommendations([])
+
+    assert result.passed is False
+    assert result.reliability_score == 0.0
+    assert "No recommendations were generated." in result.issues
+
+
+def test_evaluation_fails_for_invalid_scores():
+    """Scores outside the expected range should fail evaluation."""
+
+    recommendations = [
+        (
+            {
+                "title": "Test Song",
+                "artist": "Test Artist",
+            },
+            100.0,
+            "Test explanation",
+        )
+    ]
+
+    result = evaluate_recommendations(recommendations)
+
+    assert result.passed is False
+    assert result.reliability_score < 100.0
+    assert any(
+        "outside the expected range" in issue
+        for issue in result.issues
+    )
+
+
+def test_evaluation_fails_for_missing_explanations():
+    """Recommendations must include meaningful explanations."""
+
+    recommendations = [
+        (
+            {
+                "title": "Test Song",
+                "artist": "Test Artist",
+            },
+            3.0,
+            "",
+        )
+    ]
+
+    result = evaluate_recommendations(recommendations)
+
+    assert result.passed is False
+    assert any(
+        "lack explanations" in issue
+        for issue in result.issues
+    )
+
+
+def test_evaluation_warns_about_repeated_artists():
+    """Repeated artists should generate an advisory warning."""
+
+    recommendations = [
+        (
+            {"title": "Song One", "artist": "Artist A"},
+            4.0,
+            "Good energy match",
+        ),
+        (
+            {"title": "Song Two", "artist": "Artist A"},
+            3.0,
+            "Good mood match",
+        ),
+    ]
+
+    result = evaluate_recommendations(recommendations)
+
+    assert result.passed is True
+    assert any(
+        "artists appear more than once" in warning
+        for warning in result.warnings
+    )
+
+
+def test_rag_retrieves_pop_knowledge_from_user_request():
+    documents = load_music_knowledge()
+    retrieval = retrieve_music_context("uplifting pop for a happy workout", documents, k=3)
+
+    assert retrieval.documents
+    assert any(document["genre"] == "pop" for document in retrieval.documents)
+
+
+def test_rag_retrieves_different_genres_and_artists():
+    documents = load_music_knowledge()
+
+    rock = retrieve_music_context("aggressive rock with Voltline", documents, k=3)
+    jazz = retrieve_music_context("warm relaxed jazz", documents, k=3)
+
+    assert any(document["genre"] == "rock" for document in rock.documents)
+    assert any(document["genre"] == "jazz" for document in jazz.documents)
+    assert any("Voltline" in document["artists"] for document in rock.documents)
+
+
+def test_rag_returns_no_context_for_unmatched_request():
+    documents = load_music_knowledge()
+    retrieval = retrieve_music_context("polka underwater bagpipes", documents, k=3)
+
+    assert retrieval.documents == []
+
+
+def test_rag_context_increases_matching_song_score_and_explanation():
+    documents = load_music_knowledge()
+    songs = [
+        {
+            "title": "Sunrise City",
+            "artist": "Neon Echo",
+            "genre": "pop",
+            "mood": "happy",
+            "energy": 0.82,
+            "popularity": 82,
+            "release_decade": "2020s",
+            "mood_tags": ["uplifting", "euphoric", "bright"],
+            "acousticness": 0.18,
+            "danceability": 0.79,
+        }
+    ]
+    profile = {
+        "favorite_genre": "pop",
+        "favorite_mood": "happy",
+        "target_energy": 0.82,
+        "music_request": "uplifting pop for a happy workout",
+    }
+
+    baseline = recommend_songs(profile, songs, k=1, rag_enabled=False)
+    rag = recommend_songs(profile, songs, k=1, rag_enabled=True)
+
+    assert rag[0][1] > baseline[0][1]
+    assert "retrieved context match" in rag[0][2]
+
+
+def test_rag_no_context_falls_back_to_existing_scoring():
+    songs = load_music_knowledge
+    profile = {
+        "favorite_genre": "pop",
+        "favorite_mood": "happy",
+        "target_energy": 0.82,
+        "music_request": "polka underwater bagpipes",
+    }
+    catalog = [
+        {
+            "title": "Sunrise City",
+            "artist": "Neon Echo",
+            "genre": "pop",
+            "mood": "happy",
+            "energy": 0.82,
+            "popularity": 82,
+        }
+    ]
+
+    baseline = recommend_songs(profile, catalog, k=1, rag_enabled=False)
+    rag = recommend_songs(profile, catalog, k=1, rag_enabled=True)
+
+    assert rag[0][1] == baseline[0][1]
+
+
+def test_rag_missing_knowledge_file_falls_back_to_baseline(tmp_path):
+    profile = {
+        "favorite_genre": "pop",
+        "favorite_mood": "happy",
+        "target_energy": 0.82,
+        "music_request": "uplifting pop",
+    }
+    catalog = [{
+        "title": "Sunrise City",
+        "artist": "Neon Echo",
+        "genre": "pop",
+        "mood": "happy",
+        "energy": 0.82,
+        "popularity": 82,
+    }]
+
+    baseline = recommend_songs(profile, catalog, k=1, rag_enabled=False)
+    rag = recommend_songs(
+        profile,
+        catalog,
+        k=1,
+        rag_enabled=True,
+        knowledge_path=str(tmp_path / "missing.json"),
+    )
+
+    assert rag == baseline
+
+
+def test_rag_invalid_json_raises_value_error(tmp_path):
+    invalid_file = tmp_path / "invalid.json"
+    invalid_file.write_text("{not valid json", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Unable to load music knowledge base"):
+        load_music_knowledge(str(invalid_file))
+
+
+def test_rag_incorrect_json_structure_raises_value_error(tmp_path):
+    incorrect_file = tmp_path / "incorrect.json"
+    incorrect_file.write_text('{"documents": []}', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="JSON list"):
+        load_music_knowledge(str(incorrect_file))
+
+
+def test_rag_empty_knowledge_base_retrieves_nothing(tmp_path):
+    empty_file = tmp_path / "empty.json"
+    empty_file.write_text("[]", encoding="utf-8")
+
+    documents = load_music_knowledge(str(empty_file))
+    retrieval = retrieve_music_context("uplifting pop", documents)
+
+    assert documents == []
+    assert retrieval.documents == []
+
+
+def test_rag_malformed_entries_are_filtered(tmp_path):
+    malformed_file = tmp_path / "malformed.json"
+    malformed_file.write_text(
+        '[null, 42, {}, {"genre":"pop","artists":"Neon Echo","keywords":"pop happy"}]',
+        encoding="utf-8",
+    )
+
+    documents = load_music_knowledge(str(malformed_file))
+
+    assert len(documents) == 1
+    assert documents[0]["artists"] == ["Neon Echo"]
+
+
+def test_rag_empty_and_invalid_queries_return_no_context():
+    documents = load_music_knowledge()
+
+    assert retrieve_music_context("", documents).documents == []
+    assert retrieve_music_context(" - ", documents).documents == []
+    assert retrieve_music_context(None, documents).documents == []
+    assert retrieve_music_context(12345, documents).documents == []
+    assert retrieve_music_context(["pop"], documents).documents == []

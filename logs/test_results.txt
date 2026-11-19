@@ -1,0 +1,40 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.13.5, pytest-9.2.0, pluggy-1.7.0 -- /Users/ogechianyamele/Desktop/groovehub-applied-ai-final/groovehub-applied-ai-final/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/ogechianyamele/Desktop/groovehub-applied-ai-final/groovehub-applied-ai-final
+plugins: anyio-4.16.0
+collecting ... collected 15 items
+
+tests/test_recommender.py::test_recommend_returns_songs_sorted_by_score PASSED [  6%]
+tests/test_recommender.py::test_explain_recommendation_returns_non_empty_string PASSED [ 13%]
+tests/test_recommender.py::test_recommend_songs_penalizes_repeat_artists_when_alternatives_exist PASSED [ 20%]
+tests/test_recommender.py::test_csv_advanced_features_are_valid_for_all_songs PASSED [ 26%]
+tests/test_recommender.py::test_score_song_optional_advanced_preferences_are_bounded_and_explained PASSED [ 33%]
+tests/test_recommender.py::test_score_song_works_when_optional_preferences_and_features_are_omitted PASSED [ 40%]
+tests/test_recommender.py::test_scoring_modes_use_distinct_core_weights_and_share_advanced_bonuses PASSED [ 46%]
+tests/test_recommender.py::test_recommend_songs_rejects_unknown_mode PASSED [ 53%]
+tests/test_recommender.py::test_diversity_penalty_applies_in_every_scoring_mode PASSED [ 60%]
+tests/test_recommender.py::test_recommendation_table_wraps_long_text_and_keeps_all_reasons PASSED [ 66%]
+tests/test_recommender.py::test_evaluation_passes_for_valid_recommendations PASSED [ 73%]
+tests/test_recommender.py::test_evaluation_fails_for_empty_recommendations PASSED [ 80%]
+tests/test_recommender.py::test_evaluation_fails_for_invalid_scores PASSED [ 86%]
+tests/test_recommender.py::test_evaluation_fails_for_missing_explanations PASSED [ 93%]
+tests/test_recommender.py::test_evaluation_warns_about_repeated_artists PASSED [100%]
+
+============================== 15 passed in 0.03s ==============================
+
+Latest RAG-inclusive validation (Python 3.13.5):
+collected 26 tests; 26 passed.
+
+RAG tests added since the earlier 15-test run:
+tests/test_recommender.py::test_rag_retrieves_pop_knowledge_from_user_request PASSED
+tests/test_recommender.py::test_rag_retrieves_different_genres_and_artists PASSED
+tests/test_recommender.py::test_rag_returns_no_context_for_unmatched_request PASSED
+tests/test_recommender.py::test_rag_context_increases_matching_song_score_and_explanation PASSED
+tests/test_recommender.py::test_rag_no_context_falls_back_to_existing_scoring PASSED
+tests/test_recommender.py::test_rag_missing_knowledge_file_falls_back_to_baseline PASSED
+tests/test_recommender.py::test_rag_invalid_json_raises_value_error PASSED
+tests/test_recommender.py::test_rag_incorrect_json_structure_raises_value_error PASSED
+tests/test_recommender.py::test_rag_empty_knowledge_base_retrieves_nothing PASSED
+tests/test_recommender.py::test_rag_malformed_entries_are_filtered PASSED
+tests/test_recommender.py::test_rag_empty_and_invalid_queries_return_no_context PASSED

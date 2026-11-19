@@ -1,0 +1,77 @@
+flowchart TD
+    A[User Input<br/>Profile or music request]
+    B[Command-Line Runner<br/>src/main.py]
+    C[Scoring Mode<br/>Balanced, Genre-First, or Energy-Focused]
+
+    D[data/songs.csv]
+    E[load_songs]
+    KB[data/music_knowledge.json]
+
+    A --> B
+    B --> C
+    A --> QUERY
+
+    D --> E
+    E --> ENGINE[recommend_songs]
+    C --> ENGINE
+
+    A --> ENGINE
+    ENGINE --> SCORE[score_song]
+
+    SCORE --> CORE[Core scoring<br/>Genre, mood, and energy]
+    CORE --> ADV[Advanced feature bonuses<br/>Popularity, tags, decade,<br/>acousticness, danceability]
+
+    ADV --> RAGCHECK{RAG enabled?}
+    KB --> LOAD[load_music_knowledge]
+    LOAD --> RETRIEVE[retrieve_music_context]
+    QUERY[_query_text from request/profile] --> RETRIEVE
+    RETRIEVE --> CONTEXT{Relevant context found?}
+
+    RAGCHECK -->|Yes| LOAD
+    RAGCHECK -->|No| BASELINE[Skip RAG context]
+
+    CONTEXT -->|Yes| APPLY[apply_retrieved_context]
+    CONTEXT -->|No| FALLBACK[Use baseline score]
+
+    APPLY --> DIVERSITY[Repeat-artist penalty]
+    FALLBACK --> DIVERSITY
+    BASELINE --> DIVERSITY
+
+    DIVERSITY --> RANK[Rank remaining songs]
+    RANK --> FINAL[Top recommendations]
+
+    FINAL --> EVAL[evaluate_recommendations]
+    EVAL --> PASSED{Checks pass?}
+
+    PASSED -->|Yes| DISPLAY[Display recommendations and PASS status]
+    PASSED -->|No| ISSUES[Display issues and warnings]
+
+    DISPLAY --> LOG[Evaluation logger]
+    ISSUES --> LOG
+    LOG --> JSONL[logs/evaluation_results.jsonl]
+    LOG --> APPLOG[logs/application.log]
+
+    subgraph TESTING[Evaluation Harness and Tests]
+        HARNESS[src/evaluation_harness.py]
+        TESTS[tests/test_recommender.py]
+        HARNESS --> HARNESSRESULT[Three profiles evaluated]
+        TESTS --> TESTRESULT[26 automated tests]
+    end
+
+    HARNESS -.-> ENGINE
+    HARNESS -.-> EVAL
+    TESTS -.-> ENGINE
+    TESTS -.-> RETRIEVE
+    TESTS -.-> EVAL
+
+    classDef input fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
+    classDef rag fill:#fef3c7,stroke:#d97706,color:#78350f
+    classDef process fill:#e0f2fe,stroke:#0284cf,color:#0c4a6e
+    classDef output fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef testing fill:#f3e8ff,stroke:#9333ea,color:#581c89
+
+    class A,D,KB input
+    class LOAD,QUERY,RETRIEVE,CONTEXT,APPLY,FALLBACK rag
+    class B,C,E,ENGINE,SCORE,CORE,ADV,RAGCHECK,BASELINE,DIVERSITY,RANK process
+    class FINAL,EVAL,PASSED,DISPLAY,ISSUES,LOG,JSONL,APPLOG output
+    class HARNESS,TESTS,HARNESSRESULT,TESTRESULT,TESTING testing

@@ -1,7 +1,13 @@
-
+import math
 import csv
+import json
+import re
 from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
+
+
+RAG_DEFAULT_KNOWLEDGE_PATH = "data/music_knowledge.json"
+RAG_MAX_BONUS = 0.50
 
 
 @dataclass
@@ -195,12 +201,31 @@ def recommend_songs(
     songs: List[Dict],
     k: int = 5,
     mode: str = "balanced",
+    rag_enabled: bool = False,
+    knowledge_path: str = RAG_DEFAULT_KNOWLEDGE_PATH,
 ) -> List[Tuple[Dict, float, str]]:
-    """Return top-scoring songs with explanations and a repeat-artist penalty."""
+    """Return top-scoring songs with explanations and optional retrieved context."""
     _get_scoring_strategy(mode)
+
+    retrieval = RetrievalResult(documents=[], query_terms=[])
+    if rag_enabled:
+        try:
+            knowledge_documents = load_music_knowledge(knowledge_path)
+            retrieval = retrieve_music_context(user_prefs, knowledge_documents, k=3)
+        except ValueError:
+            retrieval = RetrievalResult(documents=[], query_terms=[])
+
     remaining = []
     for song in songs:
         score, reasons = score_song(user_prefs, song, mode=mode)
+        if rag_enabled:
+            score, reasons = apply_retrieved_context(
+                user_prefs,
+                song,
+                retrieval,
+                score,
+                reasons,
+            )
         remaining.append((song, score, reasons))
 
     recommendations = []
@@ -223,3 +248,266 @@ def recommend_songs(
         selected_artists.add(song["artist"])
 
     return recommendations
+
+@dataclass
+class EvaluationResult:
+    """Stores the results of recommendation reliability checks."""
+    passed: bool
+    reliability_score: float
+    issues: List[str]
+    warnings: List[str]
+    checks_passed: int
+    total_checks: int
+
+def evaluate_recommendations(
+    recommendations: List[Tuple[Dict, float, str]],
+    mode: str = "balanced",
+    rag_enabled: bool = False,
+) -> EvaluationResult:
+    """
+    Evaluate recommendation quality using structural and scoring checks.
+    """
+
+    strategy = _get_scoring_strategy(mode)
+
+    core_maximum = (
+        strategy.genre_weight
+        + strategy.mood_weight
+        + strategy.energy_weight
+    )
+
+    maximum_score = core_maximum + 1.25
+    if rag_enabled:
+        maximum_score += RAG_MAX_BONUS
+
+    issues = []
+    warnings = []
+
+    total_checks = 3
+    checks_passed = 0
+
+    # Check 1: Recommendations should not be empty.
+    if recommendations:
+        checks_passed += 1
+    else:
+        issues.append("No recommendations were generated.")
+
+    # Check 2: Scores must be valid and within expected bounds.
+    valid_scores = True
+
+    for song, score, explanation in recommendations:
+        if not isinstance(score, (int, float)):
+            valid_scores = False
+            issues.append("A recommendation contains a non-numeric score.")
+            break
+
+        if not math.isfinite(score):
+            valid_scores = False
+            issues.append("A recommendation contains an invalid score.")
+            break
+
+        if score < 0 or score > maximum_score + 1e-9:
+            valid_scores = False
+            issues.append(
+                f"Score for {song.get('title', 'Unknown song')} "
+                "is outside the expected range."
+            )
+            break
+
+    if valid_scores and recommendations:
+        checks_passed += 1
+
+    # Check 3: Every recommendation should have an explanation.
+    explanations_valid = all(
+        isinstance(explanation, str) and explanation.strip()
+        for _, _, explanation in recommendations
+    )
+
+    if explanations_valid and recommendations:
+        checks_passed += 1
+    else:
+        issues.append("One or more recommendations lack explanations.")
+
+    # Advisory check: identify repeated artists.
+    artists = [
+        song.get("artist")
+        for song, _, _ in recommendations
+    ]
+
+    if len(artists) != len(set(artists)):
+        warnings.append(
+            "Some artists appear more than once in the recommendations."
+        )
+
+    reliability_score = (
+        checks_passed / total_checks
+    ) * 100
+
+    return EvaluationResult(
+        passed=checks_passed == total_checks,
+        reliability_score=round(reliability_score, 2),
+        issues=issues,
+        warnings=warnings,
+        checks_passed=checks_passed,
+        total_checks=total_checks,
+    )
+
+
+def load_music_knowledge(json_path: str = RAG_DEFAULT_KNOWLEDGE_PATH) -> List[Dict]:
+    """Load a custom music knowledge-base JSON list safely."""
+    try:
+        with open(json_path, "r", encoding="utf-8") as knowledge_file:
+            documents = json.load(knowledge_file)
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"Unable to load music knowledge base: {error}") from error
+
+    if not isinstance(documents, list):
+        raise ValueError("Music knowledge base must contain a JSON list.")
+
+    valid_documents = []
+    for document in documents:
+        if not isinstance(document, dict):
+            continue
+
+        text_fields = ("id", "title", "genre", "mood", "description", "keywords")
+        if not any(
+            isinstance(document.get(field), str) and document[field].strip()
+            for field in text_fields
+        ):
+            continue
+
+        artists = document.get("artists", [])
+        if artists is None:
+            document = dict(document)
+            document["artists"] = []
+        elif not isinstance(artists, list):
+            document = dict(document)
+            document["artists"] = [str(artists)] if str(artists).strip() else []
+
+        valid_documents.append(document)
+
+    return valid_documents
+
+
+@dataclass
+class RetrievalResult:
+    """Documents and matching terms retrieved for a music request."""
+    documents: List[Dict]
+    query_terms: List[str]
+
+
+def _query_text(user_request: object) -> str:
+    """Convert a request or profile dictionary into searchable text."""
+    if isinstance(user_request, str):
+        return user_request
+    if not isinstance(user_request, dict):
+        return ""
+
+    for explicit_key in ("music_request", "query", "similar_to"):
+        explicit_value = user_request.get(explicit_key)
+        if explicit_value:
+            if isinstance(explicit_value, list):
+                return " ".join(str(item) for item in explicit_value)
+            return str(explicit_value)
+
+    parts = []
+    for key in (
+        "favorite_genre",
+        "favorite_mood",
+        "desired_mood_tags",
+        "preferred_release_decade",
+        "music_request",
+        "query",
+    ):
+        value = user_request.get(key)
+        if isinstance(value, list):
+            parts.extend(str(item) for item in value)
+        elif value is not None:
+            parts.append(str(value))
+
+    if user_request.get("similar_to"):
+        parts.append(str(user_request["similar_to"]))
+
+    return " ".join(parts)
+
+
+def retrieve_music_context(
+    user_request: object,
+    knowledge_documents: List[Dict],
+    k: int = 3,
+) -> RetrievalResult:
+    """Retrieve relevant knowledge using a dependency-free weighted lexical search."""
+    query = _query_text(user_request).lower()
+    query_terms = [term for term in re.findall(r"[a-z0-9]+", query) if len(term) > 1]
+
+    if not query_terms:
+        return RetrievalResult(documents=[], query_terms=[])
+
+    ranked = []
+    stop_terms = {"music", "song", "songs", "artist", "artists", "similar", "listen", "play"}
+
+    for document in knowledge_documents:
+        searchable = " ".join(
+            str(document.get(field, ""))
+            for field in ("title", "genre", "artists", "mood", "description", "keywords")
+        ).lower()
+
+        score = 0.0
+        for term in set(query_terms):
+            if term in stop_terms:
+                continue
+            if term in searchable:
+                score += 2.0 if term in re.findall(r"[a-z0-9]+", searchable) else 1.0
+
+        if score > 0:
+            ranked.append((score, document))
+
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    return RetrievalResult(
+        documents=[document for _, document in ranked[:max(k, 0)]],
+        query_terms=query_terms,
+    )
+
+
+def apply_retrieved_context(
+    user_request: object,
+    song: Dict,
+    retrieval: RetrievalResult,
+    score: float,
+    reasons: List[str],
+) -> Tuple[float, List[str]]:
+    """Use retrieved context to add a bounded bonus and a visible explanation."""
+    if not retrieval.documents:
+        return score, reasons
+
+    song_genre = str(song.get("genre", "")).lower()
+    song_mood = str(song.get("mood", "")).lower()
+    song_artist = str(song.get("artist", "")).lower()
+    song_tags = {str(tag).lower() for tag in song.get("mood_tags", [])}
+
+    context_matches = set()
+
+    for document in retrieval.documents:
+        genres = {str(document.get("genre", "")).lower()}
+        moods = {str(document.get("mood", "")).lower()}
+        artists = {str(artist).lower() for artist in document.get("artists", [])}
+        keywords = set(re.findall(r"[a-z0-9]+", str(document.get("keywords", "")).lower()))
+
+        if song_genre and song_genre in genres:
+            context_matches.add("genre")
+        if song_mood and song_mood in moods:
+            context_matches.add("mood")
+        if song_artist and song_artist in artists:
+            context_matches.add("artist")
+        if song_tags & keywords:
+            context_matches.add("mood-tag")
+
+    if not context_matches:
+        return score, reasons
+
+    bonus = RAG_MAX_BONUS * len(context_matches) / 4.0
+    bonus = round(min(bonus, RAG_MAX_BONUS), 2)
+    score += bonus
+    matches_text = ", ".join(sorted(context_matches))
+    reasons.append(f"retrieved context match ({matches_text}, +{bonus:.2f})")
+    return score, reasons
